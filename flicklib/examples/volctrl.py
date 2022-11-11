@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import flicklib
 import time
 import curses
@@ -27,7 +26,8 @@ def spinny(delta):
 # Main display using curses
 #
 
-def main(stdscr):
+
+def real_main(stdscr):
     global airwheelint
 
     airwheelint = 0
@@ -87,4 +87,10 @@ def main(stdscr):
 
         time.sleep(0.1)
 
-wrapper(main)
+
+def main() -> None:
+    wrapper(real_main)
+
+
+if __name__ == "__main__":
+    main()

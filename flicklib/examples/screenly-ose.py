@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import flicklib
 import requests
 from os import getenv

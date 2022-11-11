@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Author: Russel Davis @ukscone
 
 import flicklib
@@ -38,7 +36,8 @@ def flick(start,finish):
 # Main display using curses
 #
 
-def main(stdscr):
+
+def real_main(stdscr):
     global flicktxt
     global Xaxis
     global Yaxis
@@ -79,4 +78,10 @@ def main(stdscr):
 
         time.sleep(0.1)
 
-wrapper(main)
+
+def main() -> None:
+    wrapper(real_main)
+
+
+if __name__ == "__main__":
+    main()

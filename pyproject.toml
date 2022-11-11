@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=53", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flicklib"
+description = 'Flick HAT, Flick Zero and Flick Large Driver'
+license = { file = "flicklib/LICENSE.txt" }
+keywords = ['Raspberry Pi', 'Flick Gesture HAT', 'MGC3130']
+urls = { Homepage = 'http://www.pisupply.com', GitHub = 'https://github.com/PiSupply/Flick' }
+dependencies = ['RPi.GPIO']
+dynamic = ["readme", "version"]
+requires-python = ">=3.8"
+
+[[project.authors]]
+name = 'Ton van Overbeek'
+email = 'tvoverbeek@gmail.com'
+
+[[project.authors]]
+name = 'Ryan Walmsley'
+email = 'ryan@pi-supply.com'
+
+[project.scripts]
+flick-armcontrol = 'flicklib.examples.armcontrol:main'
+flick-2048 = 'flicklib.examples.f2048:main'
+flick-demo = 'flicklib.examples.demo:main'
+flick-snail = 'flicklib.examples.snail:main'
+flick-sense = 'flicklib.examples.sense:main'
+flick-screenly = 'flicklib.examples.screenly_ose:main'
+flick-volctrl = 'flicklib.examples.volctrl:main'
+
+[tool.mypy]
+strict = true
+mypy_path = "typings"
+python_version = "3.8"
+
+[tool.pyright]
+stubPath = "./typings"
+reportMissingModuleSource = false
+
+[tool.black]
+target-version = ['py38']

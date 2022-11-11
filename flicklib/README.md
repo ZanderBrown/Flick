@@ -8,17 +8,10 @@ Flicklib needs i2c enabled, you can use raspi-config to do this.
 
 ### Installation from Source
 
-Clone this library, make your way into this directory:
+Clone this library, and then install with:
 
 ```
-git clone https://github.com/PiSupply/Flick
-cd Flick/flicklib/library
-```
-    
-And then install the library with:
-
-```
-sudo python setup.py install
+sudo pip install .
 ```
 
-There are demo programs in the bin directory
+There are demo programs in the examples directory

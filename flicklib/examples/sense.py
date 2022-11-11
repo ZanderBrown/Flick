@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import sys
 import time
 
@@ -235,11 +233,13 @@ def touch(position):
     global touchtxt
     touchtxt = position
 
+
 #
 # Main display using curses
 #
 
-def main(argv):
+
+def real_main(argv: list[str]) -> None:
 
     global xyztxt
     global flicktxt
@@ -297,13 +297,17 @@ def main(argv):
             doubletaptxt = ''
         time.sleep(0.1)
 
+
 # main
-if "__main__" == __name__:
+def main() -> None:
     if len(sys.argv) < 1:
-        sys.exit('usage: {p:s}'.format(p=sys.argv[0]))
+        sys.exit("usage: {p:s}".format(p=sys.argv[0]))
 
     try:
-        main(sys.argv[1:])
+        real_main(sys.argv[1:])
     except KeyboardInterrupt:
-        sys.exit('interrupted')
-        pass
+        sys.exit("interrupted")
+
+
+if "__main__" == __name__:
+    main()

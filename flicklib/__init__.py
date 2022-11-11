@@ -3,7 +3,7 @@ import threading
 import time
 from sys import exit, version_info
 import sys
-import i2c
+from . import i2c
 
 try:
     import RPi.GPIO as GPIO

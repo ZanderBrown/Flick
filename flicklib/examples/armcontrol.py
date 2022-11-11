@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-
-import signal
 import flicklib
 import time
 import curses
@@ -80,11 +77,13 @@ def touch(position):
         arm.moveGrip(2)
     arm.reset()
 
+
 #
 # Main display using curses
 #
 
-def main(stdscr):
+
+def real_main(stdscr) -> None:
     global flicktxt
     global airwheeltxt
     global touchtxt
@@ -169,5 +168,10 @@ def main(stdscr):
 
         time.sleep(0.1)
 
-wrapper(main)
 
+def main() -> None:
+    wrapper(real_main)
+
+
+if __name__ == "__main__":
+    main()
