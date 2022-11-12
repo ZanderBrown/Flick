@@ -1,36 +1,41 @@
+from __future__ import annotations
+
 import atexit
 import threading
 import time
-from sys import exit, version_info
-import sys
+from sys import exit
+from typing import Any, Callable, Literal, Optional, Sequence, TypedDict, Union
+
 from . import i2c
 
 try:
     import RPi.GPIO as GPIO
 except ImportError:
-    exit("This library requires the RPi.GPIO module\nInstall with: sudo pip install RPi.GPIO")
+    exit(
+        "This library requires the RPi.GPIO module\nInstall with: sudo pip install RPi.GPIO"
+    )
 
-__version__ = '0.0.3'
+__version__ = "0.0.3"
 
-SW_ADDR		= 0x42
-SW_RESET_PIN	= 17
-SW_XFER_PIN	= 27
+SW_ADDR = 0x42
+SW_RESET_PIN = 17
+SW_XFER_PIN = 27
 
 SW_HEADER_SIZE = 4
 
 # Bits in sysinfo
-SW_DATA_DSP      = 0b0000000000000001
-SW_DATA_GESTURE  = 0b0000000000000010
-SW_DATA_TOUCH    = 0b0000000000000100
+SW_DATA_DSP = 0b0000000000000001
+SW_DATA_GESTURE = 0b0000000000000010
+SW_DATA_TOUCH = 0b0000000000000100
 SW_DATA_AIRWHEEL = 0b0000000000001000
-SW_DATA_XYZ      = 0b0000000000010000
+SW_DATA_XYZ = 0b0000000000010000
 
 # Msg IDs
 SW_SYSTEM_STATUS = 0x15
-SW_REQUEST_MSG   = 0x06
-SW_FW_VERSION    = 0x83
-SW_SET_RUNTIME   = 0xA2
-SW_SENSOR_DATA   = 0x91
+SW_REQUEST_MSG = 0x06
+SW_FW_VERSION = 0x83
+SW_SET_RUNTIME = 0xA2
+SW_SENSOR_DATA = 0x91
 
 i2c_bus = 1
 
@@ -53,89 +58,122 @@ gesture = 0
 
 io_error_count = 0
 
+_Direction = Literal["south", "west", "north", "east"]
+_Position = Union[_Direction, Literal["center"]]
+_AirwheelCallback = Callable[[float], None]
+_TouchCallback = Callable[[_Position], None]
+_TapCallback = Callable[[_Position], None]
+_DoubleTapCallback = Callable[[_Position], None]
+_GarbageCallback = Callable[[], None]
+_FlickCallback = Callable[[_Direction, _Direction], None]
+_MoveCallback = Callable[[float, float, float], None]
+
+
 _worker = None
 _on_flick = None
 _on_move = None
-_on_airwheel = []
-_on_touch = {}
-_on_touch_repeat = {}
-_on_touch_last = {}
+_on_airwheel: Optional[_AirwheelCallback] = None
+_on_touch: dict[str, dict[str, _TouchCallback]] = {}
+_on_touch_repeat: dict[str, dict[str, int]] = {}
+_on_touch_last: dict[str, dict[str, int | None]] = {}
 _on_garbage = None
-_on_circle = {}
 
-fw_info = { 'FwValid'          : '',
-            'HwRev'            : [0,0],
-            'ParamStartAddr'   : 0,
-            'LibLoaderVer'     : [0,0],
-            'LibLoaderPlatform': 0,
-            'FwStartAddr'      : 0,
-            'FwVersion'        : '',
-            'FwInfoReceived'   : False }
 
-def i2c_write(data):
+class _FwInfo(TypedDict):
+    FwValid: int
+    HwRev: tuple[int, int]
+    ParamStartAddr: int
+    LibLoaderVer: tuple[int, int]
+    LibLoaderPlatform: int
+    FwStartAddr: int
+    FwVersion: str
+    FwInfoReceived: bool
+
+
+fw_info: _FwInfo = {
+    "FwValid": 0,
+    "HwRev": (0, 0),
+    "ParamStartAddr": 0,
+    "LibLoaderVer": (0, 0),
+    "LibLoaderPlatform": 0,
+    "FwStartAddr": 0,
+    "FwVersion": "",
+    "FwInfoReceived": False,
+}
+
+
+def i2c_write(data: Sequence[int]) -> None:
     i2cm.transaction(i2c.writing_bytes(SW_ADDR, *data))
 
-def i2c_read(len):
+
+def i2c_read(len: int) -> bytes:
     data = i2cm.transaction(i2c.reading(SW_ADDR, len))
     return data[0]
 
-def millis():
+
+def millis() -> int:
     return int(round(time.time() * 1000))
 
-def reset():
+
+def reset() -> None:
     GPIO.output(SW_RESET_PIN, GPIO.LOW)
     time.sleep(0.04)
     GPIO.output(SW_RESET_PIN, GPIO.HIGH)
-    time.sleep(0.04) # Datasheet delay of 200ms plus change
+    time.sleep(0.04)  # Datasheet delay of 200ms plus change
+
 
 class StoppableThread(threading.Thread):
-    '''Basic stoppable thread wrapper
+    """Basic stoppable thread wrapper
 
     Adds Event for stopping the execution loop
     and exiting cleanly.
-    '''
-    def __init__(self):
+    """
+
+    def __init__(self) -> None:
         threading.Thread.__init__(self)
         self.stop_event = threading.Event()
         self.daemon = True
 
-    def start(self):
+    def start(self) -> None:
         if self.is_alive() == False:
             self.stop_event.clear()
             threading.Thread.start(self)
 
-    def stop(self):
+    def stop(self) -> None:
         if self.is_alive() == True:
             # set event to signal thread to terminate
             self.stop_event.set()
             # block calling thread until thread really has terminated
             self.join()
 
+
 class AsyncWorker(StoppableThread):
-    '''Basic thread wrapper class for asyncronously running functions
+    """Basic thread wrapper class for asyncronously running functions
 
     Basic thread wrapper class for running functions
     asyncronously. Return False from your function
     to abort looping.
-    '''
-    def __init__(self, todo):
+    """
+
+    def __init__(self, todo: Callable[[], bool | None]) -> None:
         StoppableThread.__init__(self)
         self.todo = todo
 
-    def stop(self):
+    def stop(self) -> None:
         self.stop_event.set()
 
-    def run(self):
+    def run(self) -> None:
         while self.stop_event.is_set() == False:
             if self.todo() == False:
                 self.stop_event.set()
                 break
 
-def _handle_sensor_data(data):
+
+def _handle_sensor_data(data: bytearray) -> None:
     global _lastrotation, rotation
 
     d_configmask = data.pop(0) | data.pop(0) << 8
-    d_timestamp = data.pop(0) # 200hz, 8-bit counter, max ~1.25sec
+    d_timestamp = data.pop(0)  # 200hz, 8-bit counter, max ~1.25sec
     d_sysinfo = data.pop(0)
 
     d_dspstatus = data[0:2]
@@ -150,7 +188,7 @@ def _handle_sensor_data(data):
         x, y, z = (
             (d_xyz[1] << 8 | d_xyz[0]) / 65536.0,
             (d_xyz[3] << 8 | d_xyz[2]) / 65536.0,
-            (d_xyz[5] << 8 | d_xyz[4]) / 65536.0
+            (d_xyz[5] << 8 | d_xyz[4]) / 65536.0,
         )
         if callable(_on_move):
             _on_move(x, y, z)
@@ -159,18 +197,18 @@ def _handle_sensor_data(data):
         # We have a gesture!
         is_edge = (d_gesture[3] & 0b00000001) > 0
         gestures = [
-            ('garbage','',''),
-            ('flick','west','east'),
-            ('flick','east','west'),
-            ('flick','south','north'),
-            ('flick','north','south'),
-            ('circle','clockwise',''),
-            ('circle','counter-clockwise','')
+            ("garbage", "", ""),
+            ("flick", "west", "east"),
+            ("flick", "east", "west"),
+            ("flick", "south", "north"),
+            ("flick", "north", "south"),
+            ("circle", "clockwise", ""),
+            ("circle", "counter-clockwise", ""),
         ]
-        for i,gesture in enumerate(gestures):
+        for i, gesture in enumerate(gestures):
             if d_gesture[0] == i + 1:
 
-                if gesture[0] == 'flick' and callable(_on_flick):
+                if gesture[0] == "flick" and callable(_on_flick):
                     _on_flick(gesture[1], gesture[2])
 
                 break
@@ -178,33 +216,36 @@ def _handle_sensor_data(data):
     if d_configmask & SW_DATA_TOUCH and not (d_touch[0] == 0 and d_touch[1] == 0):
         # We have a touch
         d_action = d_touch[1] << 8 | d_touch[0]
-        d_touchcount = d_touch[2] * 5 # Time to touch in ms
+        d_touchcount = d_touch[2] * 5  # Time to touch in ms
 
-        actions = [
-            ('touch','south'),
-            ('touch','west'),
-            ('touch','north'),
-            ('touch','east'),
-            ('touch','center'),
-            ('tap','south'),
-            ('tap','west'),
-            ('tap','north'),
-            ('tap','east'),
-            ('tap','center'),
-            ('doubletap','south'),
-            ('doubletap','west'),
-            ('doubletap','north'),
-            ('doubletap','east'),
-            ('doubletap','center')
+        actions: list[tuple[str, _Position]] = [
+            ("touch", "south"),
+            ("touch", "west"),
+            ("touch", "north"),
+            ("touch", "east"),
+            ("touch", "center"),
+            ("tap", "south"),
+            ("tap", "west"),
+            ("tap", "north"),
+            ("tap", "east"),
+            ("tap", "center"),
+            ("doubletap", "south"),
+            ("doubletap", "west"),
+            ("doubletap", "north"),
+            ("doubletap", "east"),
+            ("doubletap", "center"),
         ]
 
-        comp = 0b0000000000000001 << len(actions)-1
+        comp = 0b0000000000000001 << len(actions) - 1
         for action in reversed(actions):
             if d_action & comp:
 
                 handle_touch = False
 
-                if action[0] in _on_touch.keys() and action[1] in _on_touch[action[0]].keys():
+                if (
+                    action[0] in _on_touch.keys()
+                    and action[1] in _on_touch[action[0]].keys()
+                ):
                     if not action[0] in _on_touch_last.keys():
                         _on_touch_last[action[0]] = {}
                         handle_touch = True
@@ -213,28 +254,35 @@ def _handle_sensor_data(data):
                         _on_touch_last[action[0]][action[1]] = None
                         handle_touch = True
 
-                    elif (millis() - _on_touch_last[action[0]][action[1]]) >= 1000.0 / _on_touch_repeat[action[0]][action[1]]:
+                    elif (
+                        millis() - (_on_touch_last[action[0]][action[1]] or 0)
+                    ) >= 1000.0 / _on_touch_repeat[action[0]][action[1]]:
                         handle_touch = True
 
                     if callable(_on_touch[action[0]][action[1]]) and handle_touch:
                         _on_touch[action[0]][action[1]](action[1])
                         _on_touch_last[action[0]][action[1]] = millis()
 
-                if action[0] in _on_touch.keys() and 'all' in _on_touch[action[0]].keys():
+                if (
+                    action[0] in _on_touch.keys()
+                    and "all" in _on_touch[action[0]].keys()
+                ):
                     if not action[0] in _on_touch_last.keys():
                         _on_touch_last[action[0]] = {}
                         handle_touch = True
 
-                    if not 'all' in _on_touch_last[action[0]].keys():
-                        _on_touch_last[action[0]]['all'] = None
+                    if not "all" in _on_touch_last[action[0]].keys():
+                        _on_touch_last[action[0]]["all"] = None
                         handle_touch = True
 
-                    elif (millis() - _on_touch_last[action[0]]['all']) >= 1000.0 / _on_touch_repeat[action[0]]['all']:
+                    elif (
+                        millis() - (_on_touch_last[action[0]]["all"] or 0)
+                    ) >= 1000.0 / _on_touch_repeat[action[0]]["all"]:
                         handle_touch = True
 
-                    if callable(_on_touch[action[0]]['all']) and handle_touch:
-                        _on_touch[action[0]]['all'](action[1])
-                        _on_touch_last[action[0]]['all'] = millis()
+                    if callable(_on_touch[action[0]]["all"]) and handle_touch:
+                        _on_touch[action[0]]["all"](action[1])
+                        _on_touch_last[action[0]]["all"] = millis()
 
                 break
             comp = comp >> 1
@@ -260,34 +308,42 @@ def _handle_sensor_data(data):
 
         _lastrotation = d_airwheel[0]
 
-def _handle_status_info(data):
+
+def _handle_status_info(data: bytearray) -> None:
+    # TODO: It's a local variable we never read?
     error = data[7] << 8 | data[6]
 
-def _handle_firmware_info(data):
-    global fw_info
-    fw_info['FwValid'] = data.pop(0)
-    fw_info['HwRev']  = [ data.pop(0) , data.pop(0) ]
-    fw_info['ParamStartAddr'] = data.pop(0) * 128
-    fw_info['LibLoaderVer'] = [ data.pop(0), data.pop(0) ]
-    fw_info['LibLoaderPlatform'] = data.pop(0)
-    fw_info['FwStartAddr'] = data.pop(0) * 128
-    fw_version = ''.join(map(chr,data))
-    fw_info['FwVersion'] = fw_version.split("\0")[0] # Remove garbage after the '\0' string terminator
-    fw_info['FwInfoReceived'] = True
 
-    if fw_info['FwValid'] == 0:
+def _handle_firmware_info(data: bytearray) -> None:
+    global fw_info
+    fw_info["FwValid"] = data.pop(0)
+    fw_info["HwRev"] = (data.pop(0), data.pop(0))
+    fw_info["ParamStartAddr"] = data.pop(0) * 128
+    fw_info["LibLoaderVer"] = (data.pop(0), data.pop(0))
+    fw_info["LibLoaderPlatform"] = data.pop(0)
+    fw_info["FwStartAddr"] = data.pop(0) * 128
+    fw_version = "".join(map(chr, data))
+    fw_info["FwVersion"] = fw_version.split("\0")[
+        0
+    ]  # Remove garbage after the '\0' string terminator
+    fw_info["FwInfoReceived"] = True
+
+    if fw_info["FwValid"] == 0:
         raise Exception("No valid GestIC Library could be located")
 
-    if fw_info['FwValid'] == 0x0A:
-        raise Exception("An invalid GestiIC Library was stored, or the last update failed")
+    if fw_info["FwValid"] == 0x0A:
+        raise Exception(
+            "An invalid GestiIC Library was stored, or the last update failed"
+        )
 
-def _read_msg(len=132):
+
+def _read_msg(len: int = 132) -> bytearray:
     end = time.time() + 0.005
     while GPIO.input(SW_XFER_PIN) and time.time() < end:
         time.sleep(0.001)
     if GPIO.input(SW_XFER_PIN):
         # No new msg available
-        return [0, 0, 0, 0]
+        return bytearray([0, 0, 0, 0])
     # Assert transfer line low to ensure
     # MGC3130 does not update data buffers
     if not GPIO.input(SW_XFER_PIN):
@@ -299,21 +355,25 @@ def _read_msg(len=132):
         except IOError:
             io_error_count += 1
             if io_error_count > 10:
-                raise Exception("Flick encoutered more than 10 consecutive I2C IO errors!")
-            return [0,0,0,0,0,0,0,0,0]
+                raise Exception(
+                    "Flick encoutered more than 10 consecutive I2C IO errors!"
+                )
+            return bytearray([0, 0, 0, 0, 0, 0, 0, 0, 0])
         finally:
             GPIO.setup(SW_XFER_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    raise Exception("Flick failed to recevive data")
 
-def _do_poll():
-    #time.sleep(0.004)
+
+def _do_poll() -> None:
+    # time.sleep(0.004)
     data = _read_msg(26)
 
-    d_size  = data.pop(0)
+    d_size = data.pop(0)
     if d_size == 0:
         # No msg from MGC3130
         return
     d_flags = data.pop(0)
-    d_seq   = data.pop(0)
+    d_seq = data.pop(0)
     d_ident = data.pop(0)
 
     if d_ident == 0x91:
@@ -323,148 +383,150 @@ def _do_poll():
     else:
         pass
 
-def _start_poll():
+
+def _start_poll() -> None:
     global _worker
-    if _worker == None:
+    if _worker is None:
         _worker = AsyncWorker(_do_poll)
     _worker.start()
 
-def _stop_poll():
+
+def _stop_poll() -> None:
     global _worker
     if _worker is not None:
         _worker.stop()
         _worker = None
 
-def get_arg(args, arg, default = None):
-    if arg in args.keys():
-        return args[arg]
-    return default
 
-def flick(*args, **kwargs):
-    '''Bind flick event'''
+def flick() -> Callable[[_FlickCallback], None]:
+    """Bind flick event"""
 
-    def register(handler):
+    def register(handler: _FlickCallback) -> None:
         global _on_flick
         _on_flick = handler
 
     return register
 
 
-def touch(*args, **kwargs):
-    '''Bind touch event
+def touch(
+    *, position: str = "all", repeat_rate: int = 4
+) -> Callable[[_TouchCallback], None]:
+    """Bind touch event
 
     :param repeat_rate: Max number of times/second to fire the touch event
     :param position: Position of touch to watch- north, south, east, west, center
-    '''
+    """
     global _on_touch, _on_touch_repeat
 
-    t_position = get_arg(kwargs, 'position', 'all')
-    t_repeat_rate = get_arg(kwargs, 'repeat_rate', 4)
+    if not "touch" in _on_touch.keys():
+        _on_touch["touch"] = {}
+    if not "touch" in _on_touch_repeat.keys():
+        _on_touch_repeat["touch"] = {}
 
-    if not 'touch' in _on_touch.keys():
-        _on_touch['touch'] = {}
-    if not 'touch' in _on_touch_repeat.keys():
-        _on_touch_repeat['touch'] = {}
-
-    def register(handler):
+    def register(handler: _TouchCallback) -> None:
         global _on_touch, _on_touch_repeat
-        _on_touch['touch'][t_position] = handler
-        _on_touch_repeat['touch'][t_position] = t_repeat_rate
+        _on_touch["touch"][position] = handler
+        _on_touch_repeat["touch"][position] = repeat_rate
 
     return register
 
 
-def tap(*args, **kwargs):
-    '''Bind tap event
+def tap(
+    *, position: str = "all", repeat_rate: int = 4
+) -> Callable[[_TapCallback], None]:
+    """Bind tap event
 
     :param repeat_rate: Max number of times/second to fire the touch event
     :param position: Position of tap to watch- north, south, east, west, center
-    '''
+    """
     global _on_touch, _on_touch_repeat
 
-    t_position = get_arg(kwargs, 'position', 'all')
-    t_repeat_rate = get_arg(kwargs, 'repeat_rate', 4)
+    if not "tap" in _on_touch.keys():
+        _on_touch["tap"] = {}
+    if not "tap" in _on_touch_repeat.keys():
+        _on_touch_repeat["tap"] = {}
 
-    if not 'tap' in _on_touch.keys():
-        _on_touch['tap'] = {}
-    if not 'tap' in _on_touch_repeat.keys():
-        _on_touch_repeat['tap'] = {}
-
-    def register(handler):
+    def register(handler: _TapCallback) -> None:
         global _on_touch, _on_touch_repeat
-        _on_touch['tap'][t_position] = handler
-        _on_touch_repeat['tap'][t_position] = t_repeat_rate
+        _on_touch["tap"][position] = handler
+        _on_touch_repeat["tap"][position] = repeat_rate
 
     return register
 
 
-def double_tap(*args, **kwargs):
-    '''Bind double tap event
+def double_tap(
+    *, position: str = "all", repeat_rate: int = 4
+) -> Callable[[_DoubleTapCallback], None]:
+    """Bind double tap event
 
     :param repeat_rate: Max number of times/second to fire the double tap event
     :param position: Position of double tap to watch- north, south, east, west, center
-    '''
+    """
     global _on_touch, _on_touch_repeat
 
-    t_position = get_arg(kwargs, 'position', 'all')
-    t_repeat_rate = get_arg(kwargs, 'repeat_rate', 4)
+    if not "doubletap" in _on_touch.keys():
+        _on_touch["doubletap"] = {}
+    if not "doubletap" in _on_touch_repeat.keys():
+        _on_touch_repeat["doubletap"] = {}
 
-    if not 'doubletap' in _on_touch.keys():
-        _on_touch['doubletap'] = {}
-    if not 'doubletap' in _on_touch_repeat.keys():
-        _on_touch_repeat['doubletap'] = {}
-
-    def register(handler):
+    def register(handler: _DoubleTapCallback) -> None:
         global _on_touch
-        _on_touch['doubletap'][t_position] = handler
-        _on_touch_repeat['doubletap'][t_position] = t_repeat_rate
+        _on_touch["doubletap"][position] = handler
+        _on_touch_repeat["doubletap"][position] = repeat_rate
 
     return register
 
 
-def garbage():
-    '''Bind an action to the "garbage" gesture
+def garbage() -> Callable[[_GarbageCallback], None]:
+    """Bind an action to the "garbage" gesture
 
     A sort of grab-and-throw-away-garbage above Flick
-    '''
-    def register(handler):
+    """
+
+    # TODO: This is never actual invoked?
+
+    def register(handler: _GarbageCallback) -> None:
         global _on_garbage
         _on_garbage = handler
 
     return register
 
 
-def move():
-    '''Bind an action to move
+def move() -> Callable[[_MoveCallback], None]:
+    """Bind an action to move
 
     The handler will receive x, y and z values
     describing the tracked finger in 3D space above
     Flick.
-    '''
-    def register(handler):
+    """
+
+    def register(handler: _MoveCallback) -> None:
         global _on_move
         _on_move = handler
 
     return register
 
 
-def airwheel():
-    '''Bind an action to the "airhweel" gesture
+def airwheel() -> Callable[[_AirwheelCallback], None]:
+    """Bind an action to the "airhweel" gesture
 
     Point your finger at Flick and spin it in a wheel
     The handler will receive a rotation delta in degrees
-    '''
-    def register(handler):
+    """
+
+    def register(handler: _AirwheelCallback) -> None:
         global _on_airwheel
         _on_airwheel = handler
 
     return register
 
-def getfwinfo():
+
+def getfwinfo() -> _FwInfo:
     global fw_info
     return fw_info
 
-def _exit():
+
+def _exit() -> None:
     _stop_poll()
     if GPIO != None:
         GPIO.cleanup()
@@ -476,16 +538,16 @@ reset()
 
 # MGC313 sends firmware version immediately after reset
 data = _read_msg(132)
-d_size  = data.pop(0)
+d_size = data.pop(0)
 d_flags = data.pop(0)
-d_seq   = data.pop(0)
+d_seq = data.pop(0)
 d_ident = data.pop(0)
-if (d_ident != 0x83):
-    print('Did not receive firmware info')
+if d_ident != 0x83:
+    print("Did not receive firmware info")
     exit()
 _handle_firmware_info(data)
 
-time.sleep(0.2) # MGC3130 starts processing 200 msec after reset
+time.sleep(0.2)  # MGC3130 starts processing 200 msec after reset
 
 # Lock data output for:
 # Bit 0: DSP Status
@@ -493,7 +555,26 @@ time.sleep(0.2) # MGC3130 starts processing 200 msec after reset
 # Bit 2: TouchInfo
 # Bit 3: AirWheelInfo
 # Bit 4: xyzPosition
-i2c_write([0x10, 0x00, 0x00, 0xa2, 0xa1, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff])
+i2c_write(
+    [
+        0x10,
+        0x00,
+        0x00,
+        0xA2,
+        0xA1,
+        0x00,
+        0x00,
+        0x00,
+        0x1F,
+        0x00,
+        0x00,
+        0x00,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+    ]
+)
 time.sleep(0.1)
 
 # Enable auto-calibration for:
@@ -502,7 +583,26 @@ time.sleep(0.1)
 # Bit 3: idle
 # Bit 4: invalid values, if values completely out of range
 # Bit 5: triggered by AFA (Automati Frequency Adjustment)
-i2c_write([0x10, 0x00, 0x00, 0xa2, 0x80, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00])
+i2c_write(
+    [
+        0x10,
+        0x00,
+        0x00,
+        0xA2,
+        0x80,
+        0x00,
+        0x00,
+        0x00,
+        0x3F,
+        0x00,
+        0x00,
+        0x00,
+        0x3F,
+        0x00,
+        0x00,
+        0x00,
+    ]
+)
 
 # Start read output data thread
 _start_poll()
